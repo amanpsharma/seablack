@@ -31,6 +31,31 @@ router.get('/', async (req, res) => {
   }
 });
 
+// GET daily spending trend (last N days, sent only)
+router.get('/trend', async (req, res) => {
+  try {
+    const days = Math.min(parseInt(req.query.days) || 30, 90);
+    const since = new Date();
+    since.setDate(since.getDate() - days + 1);
+    since.setHours(0, 0, 0, 0);
+
+    const result = await Transaction.aggregate([
+      { $match: { paidAt: { $gte: since }, $or: [{ type: 'sent' }, { type: { $exists: false } }] } },
+      {
+        $group: {
+          _id: { $dateToString: { format: '%Y-%m-%d', date: '$paidAt' } },
+          total: { $sum: '$amount' },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { _id: 1 } },
+    ]);
+    res.json(result.map((r) => ({ date: r._id, total: r.total, count: r.count })));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET summary stats
 router.get('/stats', async (req, res) => {
   try {
