@@ -31,6 +31,40 @@ router.get('/', async (req, res) => {
   }
 });
 
+// GET recurring payments (same UPI ID paid 3+ times)
+router.get('/recurring', async (req, res) => {
+  try {
+    const results = await Transaction.aggregate([
+      { $match: { upiId: { $ne: '' }, $or: [{ type: 'sent' }, { type: { $exists: false } }] } },
+      {
+        $group: {
+          _id: '$upiId',
+          recipient: { $last: '$recipient' },
+          count: { $sum: 1 },
+          total: { $sum: '$amount' },
+          avgAmount: { $avg: '$amount' },
+          lastPaid: { $max: '$paidAt' },
+          firstPaid: { $min: '$paidAt' },
+        },
+      },
+      { $match: { count: { $gte: 3 } } },
+      { $sort: { count: -1 } },
+      { $limit: 10 },
+    ]);
+    res.json(results.map((r) => ({
+      upiId: r._id,
+      recipient: r.recipient,
+      count: r.count,
+      total: r.total,
+      avgAmount: r.avgAmount,
+      lastPaid: r.lastPaid,
+      firstPaid: r.firstPaid,
+    })));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET daily spending trend (last N days, sent only)
 router.get('/trend', async (req, res) => {
   try {
