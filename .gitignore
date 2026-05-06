@@ -1,0 +1,11 @@
+node_modules/
+android/
+.expo/
+.env
+.env.local
+*.pem
+*.key
+*.jks
+*.keystore
+npm-debug.*
+.DS_Store
