@@ -68,34 +68,30 @@ router.get("/stats", async (req, res) => {
   try {
     const now = new Date();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
 
-    const [totalThisMonth, totalAllTime, byCategory] = await Promise.all([
+    const [totalThisMonth, totalLastMonth, totalAllTime, byCategory] = await Promise.all([
       Transaction.aggregate([
         { $match: { paidAt: { $gte: startOfMonth } } },
-        {
-          $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } },
-        },
+        { $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } } },
       ]),
       Transaction.aggregate([
-        {
-          $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } },
-        },
+        { $match: { paidAt: { $gte: startOfLastMonth, $lt: startOfMonth } } },
+        { $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } } },
+      ]),
+      Transaction.aggregate([
+        { $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } } },
       ]),
       Transaction.aggregate([
         { $match: { paidAt: { $gte: startOfMonth } } },
-        {
-          $group: {
-            _id: "$category",
-            total: { $sum: "$amount" },
-            count: { $sum: 1 },
-          },
-        },
+        { $group: { _id: "$category", total: { $sum: "$amount" }, count: { $sum: 1 } } },
         { $sort: { total: -1 } },
       ]),
     ]);
 
     res.json({
       thisMonth: totalThisMonth[0] || { total: 0, count: 0 },
+      lastMonth: totalLastMonth[0] || { total: 0, count: 0 },
       allTime: totalAllTime[0] || { total: 0, count: 0 },
       byCategory,
     });
