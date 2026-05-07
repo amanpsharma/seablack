@@ -80,27 +80,43 @@ router.get("/stats", async (req, res) => {
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
 
-    const [totalThisMonth, totalLastMonth, totalAllTime, byCategory] = await Promise.all([
+    const isSent = { $or: [{ type: "sent" }, { type: { $exists: false } }] };
+
+    const [sentThisMonth, receivedThisMonth, totalLastMonth, totalAllTime, byCategory] = await Promise.all([
       Transaction.aggregate([
-        { $match: { paidAt: { $gte: startOfMonth } } },
+        { $match: { $and: [{ paidAt: { $gte: startOfMonth } }, isSent] } },
         { $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } } },
       ]),
       Transaction.aggregate([
-        { $match: { paidAt: { $gte: startOfLastMonth, $lt: startOfMonth } } },
+        { $match: { paidAt: { $gte: startOfMonth }, type: "received" } },
+        { $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } } },
+      ]),
+      Transaction.aggregate([
+        { $match: { $and: [{ paidAt: { $gte: startOfLastMonth, $lt: startOfMonth } }, isSent] } },
         { $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } } },
       ]),
       Transaction.aggregate([
         { $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } } },
       ]),
       Transaction.aggregate([
-        { $match: { paidAt: { $gte: startOfMonth } } },
+        { $match: { $and: [{ paidAt: { $gte: startOfMonth } }, isSent] } },
         { $group: { _id: "$category", total: { $sum: "$amount" }, count: { $sum: 1 } } },
         { $sort: { total: -1 } },
       ]),
     ]);
 
+    const sent = sentThisMonth[0] || { total: 0, count: 0 };
+    const received = receivedThisMonth[0] || { total: 0, count: 0 };
+
     res.json({
-      thisMonth: totalThisMonth[0] || { total: 0, count: 0 },
+      thisMonth: {
+        total: sent.total,
+        count: sent.count,
+        sent: sent.total,
+        received: received.total,
+        sentCount: sent.count,
+        receivedCount: received.count,
+      },
       lastMonth: totalLastMonth[0] || { total: 0, count: 0 },
       allTime: totalAllTime[0] || { total: 0, count: 0 },
       byCategory,
