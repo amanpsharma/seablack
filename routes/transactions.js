@@ -73,22 +73,32 @@ router.get("/trend", async (req, res) => {
   }
 });
 
-// GET summary stats
+// GET summary stats (optional ?month=YYYY-MM for historical months)
 router.get("/stats", async (req, res) => {
   try {
     const now = new Date();
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-    const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    let year = now.getFullYear();
+    let month = now.getMonth(); // 0-based
+
+    if (req.query.month) {
+      const parts = req.query.month.split("-");
+      year = parseInt(parts[0]);
+      month = parseInt(parts[1]) - 1; // convert to 0-based
+    }
+
+    const startOfMonth = new Date(year, month, 1);
+    const endOfMonth = new Date(year, month + 1, 1);
+    const startOfLastMonth = new Date(year, month - 1, 1);
 
     const isSent = { $or: [{ type: "sent" }, { type: { $exists: false } }] };
 
     const [sentThisMonth, receivedThisMonth, totalLastMonth, totalAllTime, byCategory] = await Promise.all([
       Transaction.aggregate([
-        { $match: { $and: [{ paidAt: { $gte: startOfMonth } }, isSent] } },
+        { $match: { $and: [{ paidAt: { $gte: startOfMonth, $lt: endOfMonth } }, isSent] } },
         { $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } } },
       ]),
       Transaction.aggregate([
-        { $match: { paidAt: { $gte: startOfMonth }, type: "received" } },
+        { $match: { paidAt: { $gte: startOfMonth, $lt: endOfMonth }, type: "received" } },
         { $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } } },
       ]),
       Transaction.aggregate([
@@ -99,7 +109,7 @@ router.get("/stats", async (req, res) => {
         { $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } } },
       ]),
       Transaction.aggregate([
-        { $match: { $and: [{ paidAt: { $gte: startOfMonth } }, isSent] } },
+        { $match: { $and: [{ paidAt: { $gte: startOfMonth, $lt: endOfMonth } }, isSent] } },
         { $group: { _id: "$category", total: { $sum: "$amount" }, count: { $sum: 1 } } },
         { $sort: { total: -1 } },
       ]),
