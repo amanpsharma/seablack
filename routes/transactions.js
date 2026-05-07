@@ -2,27 +2,37 @@ const express = require("express");
 const router = express.Router();
 const Transaction = require("../models/Transaction");
 
-// GET all transactions (with optional filters)
+// GET all transactions (with optional filters + pagination)
 router.get("/", async (req, res) => {
   try {
-    const { category, source, type, from, to, limit = 50 } = req.query;
-    const filter = {};
-    if (category) filter.category = category;
-    if (source) filter.source = source;
+    const { category, source, type, from, to, limit = 50, skip = 0, search } = req.query;
+
+    const andConditions = [];
+    if (category) andConditions.push({ category });
+    if (source) andConditions.push({ source });
     if (type === "sent") {
-      // Old documents have no type field — treat them as 'sent' (all were debits before the field existed)
-      filter.$or = [{ type: "sent" }, { type: { $exists: false } }];
+      andConditions.push({ $or: [{ type: "sent" }, { type: { $exists: false } }] });
     } else if (type) {
-      filter.type = type;
+      andConditions.push({ type });
     }
     if (from || to) {
-      filter.paidAt = {};
-      if (from) filter.paidAt.$gte = new Date(from);
-      if (to) filter.paidAt.$lte = new Date(to);
+      const paidAt = {};
+      if (from) paidAt.$gte = new Date(from);
+      if (to) paidAt.$lte = new Date(to);
+      andConditions.push({ paidAt });
     }
-    const parsedLimit = Math.min(Number(limit) || 50, 10000); // Increased max limit
+    if (search && search.trim()) {
+      const rx = { $regex: search.trim(), $options: "i" };
+      andConditions.push({ $or: [{ recipient: rx }, { upiId: rx }, { note: rx }] });
+    }
+
+    const filter = andConditions.length > 0 ? { $and: andConditions } : {};
+    const parsedLimit = Math.min(Number(limit) || 50, 200);
+    const parsedSkip = Math.max(Number(skip) || 0, 0);
+
     const transactions = await Transaction.find(filter)
       .sort({ paidAt: -1 })
+      .skip(parsedSkip)
       .limit(parsedLimit);
     res.json(transactions);
   } catch (err) {
