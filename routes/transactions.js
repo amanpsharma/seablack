@@ -157,6 +157,16 @@ router.post("/bulk", async (req, res) => {
   }
 });
 
+// GET total transaction count (all time)
+router.get("/count", async (_req, res) => {
+  try {
+    const count = await Transaction.countDocuments({});
+    res.json({ count });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET monthly summary for last 12 months
 router.get("/monthly", async (req, res) => {
   try {
