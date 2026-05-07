@@ -147,6 +147,65 @@ router.post("/bulk", async (req, res) => {
   }
 });
 
+// GET monthly summary for last 12 months
+router.get("/monthly", async (req, res) => {
+  try {
+    const now = new Date();
+    const since = new Date(now.getFullYear(), now.getMonth() - 11, 1);
+
+    const [spending, receiving, topCats] = await Promise.all([
+      Transaction.aggregate([
+        { $match: { paidAt: { $gte: since }, $or: [{ type: "sent" }, { type: { $exists: false } }] } },
+        { $group: {
+          _id: { $dateToString: { format: "%Y-%m", date: "$paidAt" } },
+          spent: { $sum: "$amount" },
+          count: { $sum: 1 },
+        }},
+      ]),
+      Transaction.aggregate([
+        { $match: { paidAt: { $gte: since }, type: "received" } },
+        { $group: {
+          _id: { $dateToString: { format: "%Y-%m", date: "$paidAt" } },
+          received: { $sum: "$amount" },
+        }},
+      ]),
+      Transaction.aggregate([
+        { $match: { paidAt: { $gte: since }, $or: [{ type: "sent" }, { type: { $exists: false } }] } },
+        { $group: {
+          _id: { month: { $dateToString: { format: "%Y-%m", date: "$paidAt" } }, category: "$category" },
+          total: { $sum: "$amount" },
+        }},
+        { $sort: { total: -1 } },
+        { $group: { _id: "$_id.month", topCategory: { $first: "$_id.category" } } },
+      ]),
+    ]);
+
+    const spendMap = {};
+    spending.forEach((s) => { spendMap[s._id] = { spent: s.spent, count: s.count }; });
+    const receiveMap = {};
+    receiving.forEach((r) => { receiveMap[r._id] = r.received; });
+    const catMap = {};
+    topCats.forEach((c) => { catMap[c._id] = c.topCategory; });
+
+    const result = [];
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      result.push({
+        month: key,
+        spent: spendMap[key]?.spent ?? 0,
+        received: receiveMap[key] ?? 0,
+        count: spendMap[key]?.count ?? 0,
+        topCategory: catMap[key] ?? null,
+      });
+    }
+    res.json(result);
+  } catch (err) {
+    console.error("[GET /monthly]", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET single transaction by id
 router.get("/:id", async (req, res) => {
   try {
