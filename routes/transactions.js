@@ -178,7 +178,8 @@ router.post("/bulk", async (req, res) => {
         update: { $set: { userId: req.userId } },
       },
     }));
-    await Transaction.bulkWrite(claimOps, { ordered: false });
+    const claimResult = await Transaction.bulkWrite(claimOps, { ordered: false });
+    const claimedCount = claimResult.modifiedCount ?? 0;
 
     // Step 2: Upsert genuinely new transactions with this user's ID
     const insertOps = valid.map((tx) => ({
@@ -190,7 +191,8 @@ router.post("/bulk", async (req, res) => {
     }));
 
     const result = await Transaction.bulkWrite(insertOps, { ordered: false });
-    res.status(201).json({ inserted: result.upsertedCount ?? 0 });
+    // Include claimed count so the client knows data became visible even when upsertedCount is 0
+    res.status(201).json({ inserted: claimedCount + (result.upsertedCount ?? 0) });
   } catch (err) {
     console.error("[POST /bulk]", err.message);
     res.status(500).json({ error: err.message });
