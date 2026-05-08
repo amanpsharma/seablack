@@ -4,33 +4,49 @@
 module.exports = function requireAuth(req, res, next) {
   try {
     const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({ error: 'Unauthorized' });
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res
+        .status(401)
+        .json({
+          error: "Unauthorized: Missing or invalid Authorization header",
+        });
     }
 
     const token = authHeader.slice(7);
-    const parts = token.split('.');
+    const parts = token.split(".");
     if (parts.length !== 3) {
-      return res.status(401).json({ error: 'Unauthorized' });
+      return res
+        .status(401)
+        .json({ error: "Unauthorized: Invalid token format" });
     }
 
     // Base64url decode the payload segment
-    const payloadJson = Buffer.from(parts[1], 'base64url').toString('utf8');
-    const payload = JSON.parse(payloadJson);
+    const payloadJson = Buffer.from(parts[1], "base64url").toString("utf8");
+    let payload;
+    try {
+      payload = JSON.parse(payloadJson);
+    } catch (parseErr) {
+      console.error("[Auth] JSON parse failed:", parseErr.message, payloadJson);
+      return res
+        .status(401)
+        .json({ error: "Unauthorized: Invalid token payload" });
+    }
 
     if (!payload.sub) {
-      return res.status(401).json({ error: 'Unauthorized' });
+      return res.status(401).json({ error: "Unauthorized: Missing sub claim" });
     }
 
     // Reject expired tokens
     if (payload.exp && Math.floor(Date.now() / 1000) > payload.exp) {
-      return res.status(401).json({ error: 'Token expired' });
+      return res.status(401).json({ error: "Token expired" });
     }
 
     req.userId = payload.sub;
     next();
   } catch (err) {
-    console.error('[Auth] token decode failed:', err?.message);
-    res.status(401).json({ error: 'Unauthorized' });
+    console.error("[Auth] token decode failed:", err?.message);
+    return res
+      .status(401)
+      .json({ error: "Unauthorized: Server processing error" });
   }
 };
