@@ -1,6 +1,6 @@
-const { createClerkClient } = require('@clerk/backend');
+const { verifyToken } = require('@clerk/backend');
 
-const clerk = createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY });
+const SECRET_KEY = process.env.CLERK_SECRET_KEY;
 
 module.exports = async function requireAuth(req, res, next) {
   try {
@@ -9,10 +9,11 @@ module.exports = async function requireAuth(req, res, next) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
     const token = authHeader.slice(7);
-    const payload = await clerk.verifyToken(token);
+    const payload = await verifyToken(token, { secretKey: SECRET_KEY });
     req.userId = payload.sub;
     next();
-  } catch {
+  } catch (err) {
+    console.error('[Auth] verifyToken failed:', err?.message ?? err);
     res.status(401).json({ error: 'Unauthorized' });
   }
 };
