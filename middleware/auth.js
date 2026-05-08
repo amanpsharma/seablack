@@ -3,8 +3,9 @@
 // since it's sent from our own Expo app and the server runs on a private network.
 module.exports = function requireAuth(req, res, next) {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    const authHeader = req.headers.authorization || req.headers.Authorization;
+    if (!authHeader || typeof authHeader !== 'string' || !authHeader.toLowerCase().startsWith("bearer ")) {
+      console.log('[Auth] Missing/Invalid Header. Headers received:', req.headers);
       return res
         .status(401)
         .json({
@@ -12,7 +13,8 @@ module.exports = function requireAuth(req, res, next) {
         });
     }
 
-    const token = authHeader.slice(7);
+    // slice off "Bearer " regardless of case
+    const token = authHeader.substring(7);
     const parts = token.split(".");
     if (parts.length !== 3) {
       return res
