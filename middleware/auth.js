@@ -4,13 +4,18 @@
 module.exports = function requireAuth(req, res, next) {
   try {
     const authHeader = req.headers.authorization || req.headers.Authorization;
-    if (!authHeader || typeof authHeader !== 'string' || !authHeader.toLowerCase().startsWith("bearer ")) {
-      console.log('[Auth] Missing/Invalid Header. Headers received:', req.headers);
-      return res
-        .status(401)
-        .json({
-          error: "Unauthorized: Missing or invalid Authorization header",
-        });
+    if (
+      !authHeader ||
+      typeof authHeader !== "string" ||
+      !authHeader.toLowerCase().startsWith("bearer ")
+    ) {
+      console.log(
+        "[Auth] Missing/Invalid Header. Headers received:",
+        req.headers,
+      );
+      return res.status(401).json({
+        error: "Unauthorized: Missing or invalid Authorization header",
+      });
     }
 
     // slice off "Bearer " regardless of case
