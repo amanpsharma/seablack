@@ -14,11 +14,12 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@clerk/backend": "^3.4.6",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
+    "expo": "~54.0.34",
     "express": "^5.2.1",
     "mongoose": "^9.6.1",
-    "expo": "~54.0.34",
     "react": "19.1.0",
     "react-native": "0.81.5"
   }

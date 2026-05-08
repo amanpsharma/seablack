@@ -25,6 +25,8 @@ const transactionSchema = new mongoose.Schema(
     paidAt: { type: Date, default: Date.now },
     // Unique fingerprint used to deduplicate SMS syncs (no default — sparse index skips missing)
     dedupeKey: { type: String },
+    // Clerk user ID — every transaction belongs to one user
+    userId: { type: String, index: true },
   },
   { timestamps: true }
 );

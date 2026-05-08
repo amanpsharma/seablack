@@ -1,13 +1,17 @@
 const express = require("express");
 const router = express.Router();
 const Transaction = require("../models/Transaction");
+const requireAuth = require("../middleware/auth");
+
+// Every route requires a valid Clerk session
+router.use(requireAuth);
 
 // GET all transactions (with optional filters + pagination)
 router.get("/", async (req, res) => {
   try {
     const { category, source, type, from, to, limit = 50, skip = 0, search } = req.query;
 
-    const andConditions = [];
+    const andConditions = [{ userId: req.userId }];
     if (category) andConditions.push({ category });
     if (source) andConditions.push({ source });
     if (type === "sent") {
@@ -26,7 +30,7 @@ router.get("/", async (req, res) => {
       andConditions.push({ $or: [{ recipient: rx }, { upiId: rx }, { note: rx }] });
     }
 
-    const filter = andConditions.length > 0 ? { $and: andConditions } : {};
+    const filter = { $and: andConditions };
     const parsedLimit = Math.min(Number(limit) || 50, 200);
     const parsedSkip = Math.max(Number(skip) || 0, 0);
 
@@ -52,6 +56,7 @@ router.get("/trend", async (req, res) => {
     const result = await Transaction.aggregate([
       {
         $match: {
+          userId: req.userId,
           paidAt: { $gte: since },
           $or: [{ type: "sent" }, { type: { $exists: false } }],
         },
@@ -83,7 +88,7 @@ router.get("/stats", async (req, res) => {
     if (req.query.month) {
       const parts = req.query.month.split("-");
       year = parseInt(parts[0]);
-      month = parseInt(parts[1]) - 1; // convert to 0-based
+      month = parseInt(parts[1]) - 1;
     }
 
     const startOfMonth = new Date(year, month, 1);
@@ -91,25 +96,27 @@ router.get("/stats", async (req, res) => {
     const startOfLastMonth = new Date(year, month - 1, 1);
 
     const isSent = { $or: [{ type: "sent" }, { type: { $exists: false } }] };
+    const uid = { userId: req.userId };
 
     const [sentThisMonth, receivedThisMonth, totalLastMonth, totalAllTime, byCategory] = await Promise.all([
       Transaction.aggregate([
-        { $match: { $and: [{ paidAt: { $gte: startOfMonth, $lt: endOfMonth } }, isSent] } },
+        { $match: { $and: [uid, { paidAt: { $gte: startOfMonth, $lt: endOfMonth } }, isSent] } },
         { $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } } },
       ]),
       Transaction.aggregate([
-        { $match: { paidAt: { $gte: startOfMonth, $lt: endOfMonth }, type: "received" } },
+        { $match: { $and: [uid, { paidAt: { $gte: startOfMonth, $lt: endOfMonth }, type: "received" }] } },
         { $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } } },
       ]),
       Transaction.aggregate([
-        { $match: { $and: [{ paidAt: { $gte: startOfLastMonth, $lt: startOfMonth } }, isSent] } },
+        { $match: { $and: [uid, { paidAt: { $gte: startOfLastMonth, $lt: startOfMonth } }, isSent] } },
         { $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } } },
       ]),
       Transaction.aggregate([
+        { $match: uid },
         { $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } } },
       ]),
       Transaction.aggregate([
-        { $match: { $and: [{ paidAt: { $gte: startOfMonth, $lt: endOfMonth } }, isSent] } },
+        { $match: { $and: [uid, { paidAt: { $gte: startOfMonth, $lt: endOfMonth } }, isSent] } },
         { $group: { _id: "$category", total: { $sum: "$amount" }, count: { $sum: 1 } } },
         { $sort: { total: -1 } },
       ]),
@@ -140,7 +147,7 @@ router.get("/stats", async (req, res) => {
 // POST create transaction
 router.post("/", async (req, res) => {
   try {
-    const tx = new Transaction(req.body);
+    const tx = new Transaction({ ...req.body, userId: req.userId });
     await tx.save();
     res.status(201).json(tx);
   } catch (err) {
@@ -157,25 +164,32 @@ router.post("/bulk", async (req, res) => {
       return res.status(400).json({ error: "transactions array required" });
     }
 
-    // Filter out any transaction without a valid dedupeKey
     const valid = transactions.filter(
       (tx) => tx.dedupeKey && tx.dedupeKey.trim(),
     );
     if (valid.length === 0) {
-      return res
-        .status(400)
-        .json({ error: "No transactions with valid dedupeKey" });
+      return res.status(400).json({ error: "No transactions with valid dedupeKey" });
     }
 
-    const ops = valid.map((tx) => ({
+    // Step 1: Claim orphaned transactions (synced before auth was added — no userId)
+    const claimOps = valid.map((tx) => ({
       updateOne: {
-        filter: { dedupeKey: tx.dedupeKey },
-        update: { $setOnInsert: tx },
+        filter: { dedupeKey: tx.dedupeKey, userId: { $exists: false } },
+        update: { $set: { userId: req.userId } },
+      },
+    }));
+    await Transaction.bulkWrite(claimOps, { ordered: false });
+
+    // Step 2: Upsert genuinely new transactions with this user's ID
+    const insertOps = valid.map((tx) => ({
+      updateOne: {
+        filter: { dedupeKey: tx.dedupeKey, userId: req.userId },
+        update: { $setOnInsert: { ...tx, userId: req.userId } },
         upsert: true,
       },
     }));
 
-    const result = await Transaction.bulkWrite(ops, { ordered: false });
+    const result = await Transaction.bulkWrite(insertOps, { ordered: false });
     res.status(201).json({ inserted: result.upsertedCount ?? 0 });
   } catch (err) {
     console.error("[POST /bulk]", err.message);
@@ -183,10 +197,10 @@ router.post("/bulk", async (req, res) => {
   }
 });
 
-// GET total transaction count (all time)
-router.get("/count", async (_req, res) => {
+// GET total transaction count (current user only)
+router.get("/count", async (req, res) => {
   try {
-    const count = await Transaction.countDocuments({});
+    const count = await Transaction.countDocuments({ userId: req.userId });
     res.json({ count });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -198,10 +212,11 @@ router.get("/monthly", async (req, res) => {
   try {
     const now = new Date();
     const since = new Date(now.getFullYear(), now.getMonth() - 11, 1);
+    const uid = { userId: req.userId };
 
     const [spending, receiving, topCats] = await Promise.all([
       Transaction.aggregate([
-        { $match: { paidAt: { $gte: since }, $or: [{ type: "sent" }, { type: { $exists: false } }] } },
+        { $match: { $and: [uid, { paidAt: { $gte: since } }, { $or: [{ type: "sent" }, { type: { $exists: false } }] }] } },
         { $group: {
           _id: { $dateToString: { format: "%Y-%m", date: "$paidAt" } },
           spent: { $sum: "$amount" },
@@ -209,14 +224,14 @@ router.get("/monthly", async (req, res) => {
         }},
       ]),
       Transaction.aggregate([
-        { $match: { paidAt: { $gte: since }, type: "received" } },
+        { $match: { $and: [uid, { paidAt: { $gte: since }, type: "received" }] } },
         { $group: {
           _id: { $dateToString: { format: "%Y-%m", date: "$paidAt" } },
           received: { $sum: "$amount" },
         }},
       ]),
       Transaction.aggregate([
-        { $match: { paidAt: { $gte: since }, $or: [{ type: "sent" }, { type: { $exists: false } }] } },
+        { $match: { $and: [uid, { paidAt: { $gte: since } }, { $or: [{ type: "sent" }, { type: { $exists: false } }] }] } },
         { $group: {
           _id: { month: { $dateToString: { format: "%Y-%m", date: "$paidAt" } }, category: "$category" },
           total: { $sum: "$amount" },
@@ -252,10 +267,10 @@ router.get("/monthly", async (req, res) => {
   }
 });
 
-// GET single transaction by id
+// GET single transaction by id (must belong to this user)
 router.get("/:id", async (req, res) => {
   try {
-    const tx = await Transaction.findById(req.params.id);
+    const tx = await Transaction.findOne({ _id: req.params.id, userId: req.userId });
     if (!tx) return res.status(404).json({ error: "Not found" });
     res.json(tx);
   } catch (err) {
@@ -264,7 +279,7 @@ router.get("/:id", async (req, res) => {
   }
 });
 
-// PATCH update a transaction (category, note, amount, recipient)
+// PATCH update a transaction (must belong to this user)
 router.patch("/:id", async (req, res) => {
   try {
     const allowed = ["category", "note", "amount", "recipient"];
@@ -272,9 +287,11 @@ router.patch("/:id", async (req, res) => {
     for (const key of allowed) {
       if (req.body[key] !== undefined) update[key] = req.body[key];
     }
-    const tx = await Transaction.findByIdAndUpdate(req.params.id, update, {
-      new: true,
-    });
+    const tx = await Transaction.findOneAndUpdate(
+      { _id: req.params.id, userId: req.userId },
+      update,
+      { new: true }
+    );
     if (!tx) return res.status(404).json({ error: "Not found" });
     res.json(tx);
   } catch (err) {
@@ -283,10 +300,10 @@ router.patch("/:id", async (req, res) => {
   }
 });
 
-// POST clear all SMS-synced transactions
+// POST clear all SMS-synced transactions for this user
 router.post("/clear-sms", async (req, res) => {
   try {
-    const result = await Transaction.deleteMany({ source: "sms" });
+    const result = await Transaction.deleteMany({ userId: req.userId, source: "sms" });
     res.json({ deleted: result.deletedCount });
   } catch (err) {
     console.error("[POST /clear-sms]", err.message);
@@ -294,10 +311,11 @@ router.post("/clear-sms", async (req, res) => {
   }
 });
 
-// DELETE a single transaction by id
+// DELETE a single transaction (must belong to this user)
 router.delete("/:id", async (req, res) => {
   try {
-    await Transaction.findByIdAndDelete(req.params.id);
+    const tx = await Transaction.findOneAndDelete({ _id: req.params.id, userId: req.userId });
+    if (!tx) return res.status(404).json({ error: "Not found" });
     res.json({ success: true });
   } catch (err) {
     console.error("[DELETE /:id]", err.message);
