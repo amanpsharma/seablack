@@ -2,6 +2,16 @@ const express = require("express");
 const router = express.Router();
 const Transaction = require("../models/Transaction");
 const requireAuth = require("../middleware/auth");
+const {
+  createTransactionSchema,
+  updateTransactionSchema,
+  bulkSchema,
+  listQuerySchema,
+  statsQuerySchema,
+  trendQuerySchema,
+  idParamSchema,
+  validate,
+} = require("../schemas");
 
 // Every route requires a valid Clerk session
 router.use(requireAuth);
@@ -38,9 +48,9 @@ function invalidateUserStats(userId) {
 }
 
 // GET all transactions (with optional filters + pagination)
-router.get("/", async (req, res) => {
+router.get("/", validate(listQuerySchema, 'query'), async (req, res) => {
   try {
-    const { category, source, type, from, to, limit = 50, skip = 0, search } = req.query;
+    const { category, source, type, from, to, limit, skip, search } = req.query;
 
     const andConditions = [{ userId: req.userId }];
     if (category) andConditions.push({ category });
@@ -57,29 +67,26 @@ router.get("/", async (req, res) => {
       andConditions.push({ paidAt });
     }
     if (search && search.trim()) {
-      const rx = { $regex: search.trim(), $options: "i" };
+      // Escape regex special chars to prevent ReDoS / injection
+      const safe = search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const rx = { $regex: safe, $options: "i" };
       andConditions.push({ $or: [{ recipient: rx }, { upiId: rx }, { note: rx }] });
     }
 
-    const filter = { $and: andConditions };
-    const parsedLimit = Math.min(Number(limit) || 50, 200);
-    const parsedSkip = Math.max(Number(skip) || 0, 0);
-
-    const transactions = await Transaction.find(filter)
+    const transactions = await Transaction.find({ $and: andConditions })
       .sort({ paidAt: -1 })
-      .skip(parsedSkip)
-      .limit(parsedLimit);
+      .skip(skip)
+      .limit(limit);
     res.json(transactions);
   } catch (err) {
-    console.error("[GET /transactions]", err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
 // GET daily spending trend (last N days, sent only)
-router.get("/trend", async (req, res) => {
+router.get("/trend", validate(trendQuerySchema, 'query'), async (req, res) => {
   try {
-    const days = Math.min(parseInt(req.query.days) || 30, 90);
+    const days = req.query.days;
     const since = new Date();
     since.setDate(since.getDate() - days + 1);
     since.setHours(0, 0, 0, 0);
@@ -110,7 +117,7 @@ router.get("/trend", async (req, res) => {
 });
 
 // GET summary stats (optional ?month=YYYY-MM for historical months)
-router.get("/stats", async (req, res) => {
+router.get("/stats", validate(statsQuerySchema, 'query'), async (req, res) => {
   try {
     // Serve from cache when fresh (cuts 5 parallel aggregations to zero work)
     const cached = getCachedStats(req.userId, req.query.month);
@@ -186,25 +193,21 @@ router.get("/stats", async (req, res) => {
 });
 
 // POST create transaction
-router.post("/", async (req, res) => {
+router.post("/", validate(createTransactionSchema), async (req, res) => {
   try {
     const tx = new Transaction({ ...req.body, userId: req.userId });
     await tx.save();
     invalidateUserStats(req.userId);
     res.status(201).json(tx);
   } catch (err) {
-    console.error("[POST /transactions]", err.message);
     res.status(400).json({ error: err.message });
   }
 });
 
 // POST bulk upsert (SMS import — dedupeKey prevents duplicates on re-sync)
-router.post("/bulk", async (req, res) => {
+router.post("/bulk", validate(bulkSchema), async (req, res) => {
   try {
     const { transactions } = req.body;
-    if (!Array.isArray(transactions) || transactions.length === 0) {
-      return res.status(400).json({ error: "transactions array required" });
-    }
 
     const valid = transactions.filter(
       (tx) => tx.dedupeKey && tx.dedupeKey.trim(),
@@ -314,38 +317,36 @@ router.get("/monthly", async (req, res) => {
 });
 
 // GET single transaction by id (must belong to this user)
-router.get("/:id", async (req, res) => {
+router.get("/:id", validate(idParamSchema, 'params'), async (req, res) => {
   try {
     const tx = await Transaction.findOne({ _id: req.params.id, userId: req.userId });
     if (!tx) return res.status(404).json({ error: "Not found" });
     res.json(tx);
   } catch (err) {
-    console.error("[GET /:id]", err.message);
     res.status(400).json({ error: err.message });
   }
 });
 
 // PATCH update a transaction (must belong to this user)
-router.patch("/:id", async (req, res) => {
-  try {
-    const allowed = ["category", "note", "amount", "recipient"];
-    const update = {};
-    for (const key of allowed) {
-      if (req.body[key] !== undefined) update[key] = req.body[key];
+router.patch(
+  "/:id",
+  validate(idParamSchema, 'params'),
+  validate(updateTransactionSchema),
+  async (req, res) => {
+    try {
+      const tx = await Transaction.findOneAndUpdate(
+        { _id: req.params.id, userId: req.userId },
+        req.body,
+        { new: true },
+      );
+      if (!tx) return res.status(404).json({ error: "Not found" });
+      invalidateUserStats(req.userId);
+      res.json(tx);
+    } catch (err) {
+      res.status(400).json({ error: err.message });
     }
-    const tx = await Transaction.findOneAndUpdate(
-      { _id: req.params.id, userId: req.userId },
-      update,
-      { new: true }
-    );
-    if (!tx) return res.status(404).json({ error: "Not found" });
-    invalidateUserStats(req.userId);
-    res.json(tx);
-  } catch (err) {
-    console.error("[PATCH /:id]", err.message);
-    res.status(400).json({ error: err.message });
-  }
-});
+  },
+);
 
 // POST clear all SMS-synced transactions for this user
 router.post("/clear-sms", async (req, res) => {
@@ -360,7 +361,7 @@ router.post("/clear-sms", async (req, res) => {
 });
 
 // DELETE a single transaction (must belong to this user)
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", validate(idParamSchema, 'params'), async (req, res) => {
   try {
     const tx = await Transaction.findOneAndDelete({ _id: req.params.id, userId: req.userId });
     if (!tx) return res.status(404).json({ error: "Not found" });

@@ -22,7 +22,10 @@
     "express-rate-limit": "^8.5.1",
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.6.1",
+    "pino": "^10.3.1",
+    "pino-http": "^11.0.0",
     "react": "19.1.0",
-    "react-native": "0.81.5"
+    "react-native": "0.81.5",
+    "zod": "^4.4.3"
   }
 }
