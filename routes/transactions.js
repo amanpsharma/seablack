@@ -6,6 +6,37 @@ const requireAuth = require("../middleware/auth");
 // Every route requires a valid Clerk session
 router.use(requireAuth);
 
+// In-memory stats cache: key = `${userId}:${month||'current'}` → { data, expiresAt }.
+// 30s TTL is short enough that users see fresh data after a few seconds, but
+// long enough to cut Mongo aggregation load for users opening multiple screens
+// in quick succession (home → insights → activity all hit /stats).
+const STATS_TTL_MS = 30 * 1000;
+const statsCache = new Map();
+
+function statsCacheKey(userId, month) {
+  return `${userId}:${month || 'current'}`;
+}
+
+function getCachedStats(userId, month) {
+  const entry = statsCache.get(statsCacheKey(userId, month));
+  if (entry && entry.expiresAt > Date.now()) return entry.data;
+  return null;
+}
+
+function setCachedStats(userId, month, data) {
+  statsCache.set(statsCacheKey(userId, month), {
+    data,
+    expiresAt: Date.now() + STATS_TTL_MS,
+  });
+}
+
+// Drop every cache entry for this user — call on any write that affects stats
+function invalidateUserStats(userId) {
+  for (const key of statsCache.keys()) {
+    if (key.startsWith(`${userId}:`)) statsCache.delete(key);
+  }
+}
+
 // GET all transactions (with optional filters + pagination)
 router.get("/", async (req, res) => {
   try {
@@ -81,6 +112,14 @@ router.get("/trend", async (req, res) => {
 // GET summary stats (optional ?month=YYYY-MM for historical months)
 router.get("/stats", async (req, res) => {
   try {
+    // Serve from cache when fresh (cuts 5 parallel aggregations to zero work)
+    const cached = getCachedStats(req.userId, req.query.month);
+    if (cached) {
+      res.set('X-Cache', 'HIT');
+      return res.json(cached);
+    }
+    res.set('X-Cache', 'MISS');
+
     const now = new Date();
     let year = now.getFullYear();
     let month = now.getMonth(); // 0-based
@@ -125,7 +164,7 @@ router.get("/stats", async (req, res) => {
     const sent = sentThisMonth[0] || { total: 0, count: 0 };
     const received = receivedThisMonth[0] || { total: 0, count: 0 };
 
-    res.json({
+    const payload = {
       thisMonth: {
         total: sent.total,
         count: sent.count,
@@ -137,7 +176,9 @@ router.get("/stats", async (req, res) => {
       lastMonth: totalLastMonth[0] || { total: 0, count: 0 },
       allTime: totalAllTime[0] || { total: 0, count: 0 },
       byCategory,
-    });
+    };
+    setCachedStats(req.userId, req.query.month, payload);
+    res.json(payload);
   } catch (err) {
     console.error("[GET /stats]", err.message);
     res.status(500).json({ error: err.message });
@@ -149,6 +190,7 @@ router.post("/", async (req, res) => {
   try {
     const tx = new Transaction({ ...req.body, userId: req.userId });
     await tx.save();
+    invalidateUserStats(req.userId);
     res.status(201).json(tx);
   } catch (err) {
     console.error("[POST /transactions]", err.message);
@@ -191,8 +233,10 @@ router.post("/bulk", async (req, res) => {
     }));
 
     const result = await Transaction.bulkWrite(insertOps, { ordered: false });
+    const inserted = claimedCount + (result.upsertedCount ?? 0);
+    if (inserted > 0) invalidateUserStats(req.userId);
     // Include claimed count so the client knows data became visible even when upsertedCount is 0
-    res.status(201).json({ inserted: claimedCount + (result.upsertedCount ?? 0) });
+    res.status(201).json({ inserted });
   } catch (err) {
     console.error("[POST /bulk]", err.message);
     res.status(500).json({ error: err.message });
@@ -295,6 +339,7 @@ router.patch("/:id", async (req, res) => {
       { new: true }
     );
     if (!tx) return res.status(404).json({ error: "Not found" });
+    invalidateUserStats(req.userId);
     res.json(tx);
   } catch (err) {
     console.error("[PATCH /:id]", err.message);
@@ -306,6 +351,7 @@ router.patch("/:id", async (req, res) => {
 router.post("/clear-sms", async (req, res) => {
   try {
     const result = await Transaction.deleteMany({ userId: req.userId, source: "sms" });
+    if (result.deletedCount > 0) invalidateUserStats(req.userId);
     res.json({ deleted: result.deletedCount });
   } catch (err) {
     console.error("[POST /clear-sms]", err.message);
@@ -318,6 +364,7 @@ router.delete("/:id", async (req, res) => {
   try {
     const tx = await Transaction.findOneAndDelete({ _id: req.params.id, userId: req.userId });
     if (!tx) return res.status(404).json({ error: "Not found" });
+    invalidateUserStats(req.userId);
     res.json({ success: true });
   } catch (err) {
     console.error("[DELETE /:id]", err.message);
