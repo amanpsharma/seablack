@@ -2,10 +2,44 @@ require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const rateLimit = require('express-rate-limit');
 
 const app = express();
-app.use(cors());
+
+// Trust the first proxy (Render terminates TLS upstream) so req.ip is the real client.
+app.set('trust proxy', 1);
+
+// CORS — restrict to known origins in production. ALLOWED_ORIGINS=comma,separated,list.
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
+app.use(
+  cors({
+    origin: allowedOrigins.length > 0 ? allowedOrigins : true,
+    credentials: false,
+  })
+);
+
 app.use(express.json({ limit: '5mb' }));
+
+// Global rate limit: 120 requests / minute per IP. Blocks credential-stuffing,
+// userId enumeration, and brute force without affecting normal mobile usage.
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'Too many requests. Please try again in a minute.' },
+});
+app.use('/api/', apiLimiter);
+
+// Stricter limit on bulk insert (SMS sync) to prevent dump-style abuse.
+const bulkLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'Bulk sync rate exceeded. Wait a minute and retry.' },
+});
+app.use('/api/transactions/bulk', bulkLimiter);
 
 app.use('/api/transactions', require('./routes/transactions'));
 
