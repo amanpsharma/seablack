@@ -25,8 +25,12 @@ module.exports = async function requireAuth(req, res, next) {
       return res.status(401).json({ error: 'Unauthorized: Empty token' });
     }
 
-    // Verify signature against Clerk's JWKs and validate exp/nbf
-    const payload = await verifyToken(token, { secretKey: SECRET_KEY });
+    // Verify signature against Clerk's JWKs and validate exp/nbf.
+    // clockSkewInMs allows for small clock drift between server and Clerk.
+    const payload = await verifyToken(token, {
+      secretKey: SECRET_KEY,
+      clockSkewInMs: 10_000,
+    });
 
     if (!payload?.sub) {
       return res.status(401).json({ error: 'Unauthorized: Token missing sub claim' });
@@ -35,7 +39,16 @@ module.exports = async function requireAuth(req, res, next) {
     req.userId = payload.sub;
     next();
   } catch (err) {
-    console.error('[Auth] verifyToken failed:', err?.message ?? err);
-    return res.status(401).json({ error: 'Unauthorized: Invalid or expired token' });
+    // Detailed logging so we can diagnose verification failures from Render logs
+    console.error(
+      '[Auth] verifyToken failed:',
+      'reason=', err?.reason ?? 'unknown',
+      'message=', err?.message ?? String(err),
+    );
+    // Surface the specific reason to the client so they know if it's expired vs invalid
+    const reason = err?.reason || err?.message || 'invalid';
+    return res
+      .status(401)
+      .json({ error: `Unauthorized: ${reason}` });
   }
 };
