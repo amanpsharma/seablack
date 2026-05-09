@@ -1,12 +1,20 @@
-// Auth middleware. Cryptographically verifies the Clerk JWT signature using
-// Clerk's public JWKs (fetched on first call, cached internally by @clerk/backend).
+// Auth middleware. Cryptographically verifies the Clerk JWT signature.
 // X-User-Id is no longer accepted — only signed JWTs prevent userId spoofing.
+//
+// JWKs resolution priority:
+//   1. CLERK_JWT_KEY (PEM public key) — offline verification, no network call
+//   2. CLERK_SECRET_KEY + CLERK_PUBLISHABLE_KEY — standard SDK flow with JWKs fetch
 
 const { verifyToken } = require('@clerk/backend');
 
 const SECRET_KEY = process.env.CLERK_SECRET_KEY;
-if (!SECRET_KEY) {
-  console.error('[Auth] CLERK_SECRET_KEY is not set — all requests will be rejected.');
+const PUBLISHABLE_KEY = process.env.CLERK_PUBLISHABLE_KEY;
+const JWT_KEY = process.env.CLERK_JWT_KEY; // Optional PEM public key
+
+if (!SECRET_KEY && !JWT_KEY) {
+  console.error(
+    '[Auth] Neither CLERK_SECRET_KEY nor CLERK_JWT_KEY is set — all requests will be rejected.',
+  );
 }
 
 module.exports = async function requireAuth(req, res, next) {
@@ -25,10 +33,13 @@ module.exports = async function requireAuth(req, res, next) {
       return res.status(401).json({ error: 'Unauthorized: Empty token' });
     }
 
-    // Verify signature against Clerk's JWKs and validate exp/nbf.
-    // clockSkewInMs allows for small clock drift between server and Clerk.
+    // Verify signature and validate exp/nbf.
+    // jwtKey (if provided) skips the JWKs network fetch entirely.
+    // Otherwise we fall back to fetching JWKs via secretKey + publishableKey.
     const payload = await verifyToken(token, {
-      secretKey: SECRET_KEY,
+      ...(JWT_KEY ? { jwtKey: JWT_KEY } : {}),
+      ...(SECRET_KEY ? { secretKey: SECRET_KEY } : {}),
+      ...(PUBLISHABLE_KEY ? { publishableKey: PUBLISHABLE_KEY } : {}),
       clockSkewInMs: 10_000,
     });
 
