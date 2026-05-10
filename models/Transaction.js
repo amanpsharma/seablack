@@ -5,6 +5,7 @@ const transactionSchema = new mongoose.Schema(
     amount: { type: Number, required: true },
     recipient: { type: String, required: true },
     upiId: { type: String, default: "" },
+    bank: { type: String, default: "" },
     note: { type: String, default: "" },
     category: {
       type: String,
