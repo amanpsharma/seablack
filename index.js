@@ -3,10 +3,28 @@ const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
 const pinoHttp = require('pino-http');
+const { z } = require('zod');
 const logger = require('./logger');
 
+const envSchema = z.object({
+  NODE_ENV: z.string().optional().default('development'),
+  PORT: z.coerce.number().optional().default(3001),
+  MONGO_URI: z.string().min(1, "MONGO_URI is required"),
+  ALLOWED_ORIGINS: z.string().optional().default(''),
+  LOG_LEVEL: z.string().optional().default('info'),
+});
+
+const envParsed = envSchema.safeParse(process.env);
+if (!envParsed.success) {
+  console.error("Environment Validation Error:", envParsed.error.format());
+  process.exit(1);
+}
+const envVars = envParsed.data;
+
 const app = express();
+app.use(helmet());
 
 // Trust the first proxy (Render terminates TLS upstream) so req.ip is the real client.
 app.set('trust proxy', 1);
@@ -82,13 +100,8 @@ app.use((err, req, res, _next) => {
   res.status(err.status || err.statusCode || 500).json({ error: err.message });
 });
 
-const PORT = process.env.PORT || 3001;
-const MONGO_URI = process.env.MONGO_URI;
-
-if (!MONGO_URI) {
-  logger.fatal('MONGO_URI is not set in .env — server cannot start');
-  process.exit(1);
-}
+const PORT = envVars.PORT;
+const MONGO_URI = envVars.MONGO_URI;
 
 // Prevent unhandled Mongoose connection errors from crashing the process
 mongoose.connection.on('error', (err) => {

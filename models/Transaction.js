@@ -31,10 +31,14 @@ const transactionSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Only index non-empty dedupeKeys — partialFilterExpression cannot be combined with sparse
+// Compound index for fast querying per user and ordering by date
+transactionSchema.index({ userId: 1, paidAt: -1 });
+
+// Deduplicate transactions for a specific user based on deduplicaton key
 transactionSchema.index(
-  { dedupeKey: 1 },
+  { userId: 1, dedupeKey: 1 },
   { unique: true, partialFilterExpression: { dedupeKey: { $exists: true, $gt: '' } } }
 );
 
+// We drop the old global dedupeKey index if it exists so we can use the compound one instead
 module.exports = mongoose.model('Transaction', transactionSchema);
