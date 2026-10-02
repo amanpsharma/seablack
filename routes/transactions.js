@@ -1,7 +1,7 @@
-const express = require("express");
+const express = require('express');
 const router = express.Router();
-const Transaction = require("../models/Transaction");
-const requireAuth = require("../middleware/auth");
+const Transaction = require('../models/Transaction');
+const requireAuth = require('../middleware/auth');
 const {
   createTransactionSchema,
   updateTransactionSchema,
@@ -11,7 +11,7 @@ const {
   trendQuerySchema,
   idParamSchema,
   validate,
-} = require("../schemas");
+} = require('../schemas');
 
 // Every route requires a valid Clerk session
 router.use(requireAuth);
@@ -48,15 +48,15 @@ function invalidateUserStats(userId) {
 }
 
 // GET all transactions (with optional filters + pagination)
-router.get("/", validate(listQuerySchema, 'query'), async (req, res) => {
+router.get('/', validate(listQuerySchema, 'query'), async (req, res) => {
   try {
     const { category, source, type, from, to, limit, skip, search } = req.query;
 
     const andConditions = [{ userId: req.userId }];
     if (category) andConditions.push({ category });
     if (source) andConditions.push({ source });
-    if (type === "sent") {
-      andConditions.push({ $or: [{ type: "sent" }, { type: { $exists: false } }] });
+    if (type === 'sent') {
+      andConditions.push({ $or: [{ type: 'sent' }, { type: { $exists: false } }] });
     } else if (type) {
       andConditions.push({ type });
     }
@@ -69,7 +69,7 @@ router.get("/", validate(listQuerySchema, 'query'), async (req, res) => {
     if (search && search.trim()) {
       // Escape regex special chars to prevent ReDoS / injection
       const safe = search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const rx = { $regex: safe, $options: "i" };
+      const rx = { $regex: safe, $options: 'i' };
       andConditions.push({ $or: [{ recipient: rx }, { upiId: rx }, { note: rx }] });
     }
 
@@ -84,7 +84,7 @@ router.get("/", validate(listQuerySchema, 'query'), async (req, res) => {
 });
 
 // GET daily spending trend (last N days, sent only)
-router.get("/trend", validate(trendQuerySchema, 'query'), async (req, res) => {
+router.get('/trend', validate(trendQuerySchema, 'query'), async (req, res) => {
   try {
     const days = req.query.days;
     const since = new Date();
@@ -96,28 +96,26 @@ router.get("/trend", validate(trendQuerySchema, 'query'), async (req, res) => {
         $match: {
           userId: req.userId,
           paidAt: { $gte: since },
-          $or: [{ type: "sent" }, { type: { $exists: false } }],
+          $or: [{ type: 'sent' }, { type: { $exists: false } }],
         },
       },
       {
         $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$paidAt" } },
-          total: { $sum: "$amount" },
+          _id: { $dateToString: { format: '%Y-%m-%d', date: '$paidAt' } },
+          total: { $sum: '$amount' },
           count: { $sum: 1 },
         },
       },
       { $sort: { _id: 1 } },
     ]);
-    res.json(
-      result.map((r) => ({ date: r._id, total: r.total, count: r.count })),
-    );
+    res.json(result.map((r) => ({ date: r._id, total: r.total, count: r.count })));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
 // GET summary stats (optional ?month=YYYY-MM for historical months)
-router.get("/stats", validate(statsQuerySchema, 'query'), async (req, res) => {
+router.get('/stats', validate(statsQuerySchema, 'query'), async (req, res) => {
   try {
     // Serve from cache when fresh (cuts 5 parallel aggregations to zero work)
     const cached = getCachedStats(req.userId, req.query.month);
@@ -132,7 +130,7 @@ router.get("/stats", validate(statsQuerySchema, 'query'), async (req, res) => {
     let month = now.getMonth(); // 0-based
 
     if (req.query.month) {
-      const parts = req.query.month.split("-");
+      const parts = req.query.month.split('-');
       year = parseInt(parts[0]);
       month = parseInt(parts[1]) - 1;
     }
@@ -141,32 +139,41 @@ router.get("/stats", validate(statsQuerySchema, 'query'), async (req, res) => {
     const endOfMonth = new Date(year, month + 1, 1);
     const startOfLastMonth = new Date(year, month - 1, 1);
 
-    const isSent = { $or: [{ type: "sent" }, { type: { $exists: false } }] };
+    const isSent = { $or: [{ type: 'sent' }, { type: { $exists: false } }] };
     const uid = { userId: req.userId };
 
-    const [sentThisMonth, receivedThisMonth, totalLastMonth, totalAllTime, byCategory] = await Promise.all([
-      Transaction.aggregate([
-        { $match: { $and: [uid, { paidAt: { $gte: startOfMonth, $lt: endOfMonth } }, isSent] } },
-        { $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } } },
-      ]),
-      Transaction.aggregate([
-        { $match: { $and: [uid, { paidAt: { $gte: startOfMonth, $lt: endOfMonth }, type: "received" }] } },
-        { $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } } },
-      ]),
-      Transaction.aggregate([
-        { $match: { $and: [uid, { paidAt: { $gte: startOfLastMonth, $lt: startOfMonth } }, isSent] } },
-        { $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } } },
-      ]),
-      Transaction.aggregate([
-        { $match: uid },
-        { $group: { _id: null, total: { $sum: "$amount" }, count: { $sum: 1 } } },
-      ]),
-      Transaction.aggregate([
-        { $match: { $and: [uid, { paidAt: { $gte: startOfMonth, $lt: endOfMonth } }, isSent] } },
-        { $group: { _id: "$category", total: { $sum: "$amount" }, count: { $sum: 1 } } },
-        { $sort: { total: -1 } },
-      ]),
-    ]);
+    const [sentThisMonth, receivedThisMonth, totalLastMonth, totalAllTime, byCategory] =
+      await Promise.all([
+        Transaction.aggregate([
+          { $match: { $and: [uid, { paidAt: { $gte: startOfMonth, $lt: endOfMonth } }, isSent] } },
+          { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
+        ]),
+        Transaction.aggregate([
+          {
+            $match: {
+              $and: [uid, { paidAt: { $gte: startOfMonth, $lt: endOfMonth }, type: 'received' }],
+            },
+          },
+          { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
+        ]),
+        Transaction.aggregate([
+          {
+            $match: {
+              $and: [uid, { paidAt: { $gte: startOfLastMonth, $lt: startOfMonth } }, isSent],
+            },
+          },
+          { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
+        ]),
+        Transaction.aggregate([
+          { $match: uid },
+          { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
+        ]),
+        Transaction.aggregate([
+          { $match: { $and: [uid, { paidAt: { $gte: startOfMonth, $lt: endOfMonth } }, isSent] } },
+          { $group: { _id: '$category', total: { $sum: '$amount' }, count: { $sum: 1 } } },
+          { $sort: { total: -1 } },
+        ]),
+      ]);
 
     const sent = sentThisMonth[0] || { total: 0, count: 0 };
     const received = receivedThisMonth[0] || { total: 0, count: 0 };
@@ -187,13 +194,13 @@ router.get("/stats", validate(statsQuerySchema, 'query'), async (req, res) => {
     setCachedStats(req.userId, req.query.month, payload);
     res.json(payload);
   } catch (err) {
-    console.error("[GET /stats]", err.message);
+    console.error('[GET /stats]', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
 // POST create transaction
-router.post("/", validate(createTransactionSchema), async (req, res) => {
+router.post('/', validate(createTransactionSchema), async (req, res) => {
   try {
     const tx = new Transaction({ ...req.body, userId: req.userId });
     await tx.save();
@@ -205,15 +212,13 @@ router.post("/", validate(createTransactionSchema), async (req, res) => {
 });
 
 // POST bulk upsert (SMS import — dedupeKey prevents duplicates on re-sync)
-router.post("/bulk", validate(bulkSchema), async (req, res) => {
+router.post('/bulk', validate(bulkSchema), async (req, res) => {
   try {
     const { transactions } = req.body;
 
-    const valid = transactions.filter(
-      (tx) => tx.dedupeKey && tx.dedupeKey.trim(),
-    );
+    const valid = transactions.filter((tx) => tx.dedupeKey && tx.dedupeKey.trim());
     if (valid.length === 0) {
-      return res.status(400).json({ error: "No transactions with valid dedupeKey" });
+      return res.status(400).json({ error: 'No transactions with valid dedupeKey' });
     }
 
     // Step 1: Claim orphaned transactions (synced before auth was added — no userId)
@@ -241,13 +246,13 @@ router.post("/bulk", validate(bulkSchema), async (req, res) => {
     // Include claimed count so the client knows data became visible even when upsertedCount is 0
     res.status(201).json({ inserted });
   } catch (err) {
-    console.error("[POST /bulk]", err.message);
+    console.error('[POST /bulk]', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
 // GET total transaction count (current user only)
-router.get("/count", async (req, res) => {
+router.get('/count', async (req, res) => {
   try {
     const count = await Transaction.countDocuments({ userId: req.userId });
     res.json({ count });
@@ -257,7 +262,7 @@ router.get("/count", async (req, res) => {
 });
 
 // GET monthly summary for last 12 months
-router.get("/monthly", async (req, res) => {
+router.get('/monthly', async (req, res) => {
   try {
     const now = new Date();
     const since = new Date(now.getFullYear(), now.getMonth() - 11, 1);
@@ -265,42 +270,73 @@ router.get("/monthly", async (req, res) => {
 
     const [spending, receiving, topCats] = await Promise.all([
       Transaction.aggregate([
-        { $match: { $and: [uid, { paidAt: { $gte: since } }, { $or: [{ type: "sent" }, { type: { $exists: false } }] }] } },
-        { $group: {
-          _id: { $dateToString: { format: "%Y-%m", date: "$paidAt" } },
-          spent: { $sum: "$amount" },
-          count: { $sum: 1 },
-        }},
+        {
+          $match: {
+            $and: [
+              uid,
+              { paidAt: { $gte: since } },
+              { $or: [{ type: 'sent' }, { type: { $exists: false } }] },
+            ],
+          },
+        },
+        {
+          $group: {
+            _id: { $dateToString: { format: '%Y-%m', date: '$paidAt' } },
+            spent: { $sum: '$amount' },
+            count: { $sum: 1 },
+          },
+        },
       ]),
       Transaction.aggregate([
-        { $match: { $and: [uid, { paidAt: { $gte: since }, type: "received" }] } },
-        { $group: {
-          _id: { $dateToString: { format: "%Y-%m", date: "$paidAt" } },
-          received: { $sum: "$amount" },
-        }},
+        { $match: { $and: [uid, { paidAt: { $gte: since }, type: 'received' }] } },
+        {
+          $group: {
+            _id: { $dateToString: { format: '%Y-%m', date: '$paidAt' } },
+            received: { $sum: '$amount' },
+          },
+        },
       ]),
       Transaction.aggregate([
-        { $match: { $and: [uid, { paidAt: { $gte: since } }, { $or: [{ type: "sent" }, { type: { $exists: false } }] }] } },
-        { $group: {
-          _id: { month: { $dateToString: { format: "%Y-%m", date: "$paidAt" } }, category: "$category" },
-          total: { $sum: "$amount" },
-        }},
+        {
+          $match: {
+            $and: [
+              uid,
+              { paidAt: { $gte: since } },
+              { $or: [{ type: 'sent' }, { type: { $exists: false } }] },
+            ],
+          },
+        },
+        {
+          $group: {
+            _id: {
+              month: { $dateToString: { format: '%Y-%m', date: '$paidAt' } },
+              category: '$category',
+            },
+            total: { $sum: '$amount' },
+          },
+        },
         { $sort: { total: -1 } },
-        { $group: { _id: "$_id.month", topCategory: { $first: "$_id.category" } } },
+        { $group: { _id: '$_id.month', topCategory: { $first: '$_id.category' } } },
       ]),
     ]);
 
     const spendMap = {};
-    spending.forEach((s) => { spendMap[s._id] = { spent: s.spent, count: s.count }; });
+    spending.forEach((s) => {
+      spendMap[s._id] = { spent: s.spent, count: s.count };
+    });
     const receiveMap = {};
-    receiving.forEach((r) => { receiveMap[r._id] = r.received; });
+    receiving.forEach((r) => {
+      receiveMap[r._id] = r.received;
+    });
     const catMap = {};
-    topCats.forEach((c) => { catMap[c._id] = c.topCategory; });
+    topCats.forEach((c) => {
+      catMap[c._id] = c.topCategory;
+    });
 
     const result = [];
     for (let i = 11; i >= 0; i--) {
       const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
       result.push({
         month: key,
         spent: spendMap[key]?.spent ?? 0,
@@ -311,16 +347,16 @@ router.get("/monthly", async (req, res) => {
     }
     res.json(result);
   } catch (err) {
-    console.error("[GET /monthly]", err.message);
+    console.error('[GET /monthly]', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
 // GET single transaction by id (must belong to this user)
-router.get("/:id", validate(idParamSchema, 'params'), async (req, res) => {
+router.get('/:id', validate(idParamSchema, 'params'), async (req, res) => {
   try {
     const tx = await Transaction.findOne({ _id: req.params.id, userId: req.userId });
-    if (!tx) return res.status(404).json({ error: "Not found" });
+    if (!tx) return res.status(404).json({ error: 'Not found' });
     res.json(tx);
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -329,7 +365,7 @@ router.get("/:id", validate(idParamSchema, 'params'), async (req, res) => {
 
 // PATCH update a transaction (must belong to this user)
 router.patch(
-  "/:id",
+  '/:id',
   validate(idParamSchema, 'params'),
   validate(updateTransactionSchema),
   async (req, res) => {
@@ -339,7 +375,7 @@ router.patch(
         req.body,
         { new: true },
       );
-      if (!tx) return res.status(404).json({ error: "Not found" });
+      if (!tx) return res.status(404).json({ error: 'Not found' });
       invalidateUserStats(req.userId);
       res.json(tx);
     } catch (err) {
@@ -349,26 +385,26 @@ router.patch(
 );
 
 // POST clear all SMS-synced transactions for this user
-router.post("/clear-sms", async (req, res) => {
+router.post('/clear-sms', async (req, res) => {
   try {
-    const result = await Transaction.deleteMany({ userId: req.userId, source: "sms" });
+    const result = await Transaction.deleteMany({ userId: req.userId, source: 'sms' });
     if (result.deletedCount > 0) invalidateUserStats(req.userId);
     res.json({ deleted: result.deletedCount });
   } catch (err) {
-    console.error("[POST /clear-sms]", err.message);
+    console.error('[POST /clear-sms]', err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
 // DELETE a single transaction (must belong to this user)
-router.delete("/:id", validate(idParamSchema, 'params'), async (req, res) => {
+router.delete('/:id', validate(idParamSchema, 'params'), async (req, res) => {
   try {
     const tx = await Transaction.findOneAndDelete({ _id: req.params.id, userId: req.userId });
-    if (!tx) return res.status(404).json({ error: "Not found" });
+    if (!tx) return res.status(404).json({ error: 'Not found' });
     invalidateUserStats(req.userId);
     res.json({ success: true });
   } catch (err) {
-    console.error("[DELETE /:id]", err.message);
+    console.error('[DELETE /:id]', err.message);
     res.status(500).json({ error: err.message });
   }
 });

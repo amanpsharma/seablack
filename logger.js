@@ -11,13 +11,7 @@ const logger = pino({
   level: process.env.LOG_LEVEL || (isDev ? 'debug' : 'info'),
   // Strip secrets from logs — never log Authorization headers or tokens.
   redact: {
-    paths: [
-      'req.headers.authorization',
-      'req.headers.cookie',
-      '*.token',
-      '*.password',
-      '*.secret',
-    ],
+    paths: ['req.headers.authorization', 'req.headers.cookie', '*.token', '*.password', '*.secret'],
     censor: '[REDACTED]',
   },
 });

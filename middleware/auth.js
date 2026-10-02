@@ -58,10 +58,14 @@ async function fetchJwks(issuer) {
 function nodeAlgFor(jwtAlg) {
   // Map JWT alg → Node.js verify algorithm name
   switch (jwtAlg) {
-    case 'RS256': return 'RSA-SHA256';
-    case 'RS384': return 'RSA-SHA384';
-    case 'RS512': return 'RSA-SHA512';
-    default: throw new Error(`unsupported-alg: ${jwtAlg}`);
+    case 'RS256':
+      return 'RSA-SHA256';
+    case 'RS384':
+      return 'RSA-SHA384';
+    case 'RS512':
+      return 'RSA-SHA512';
+    default:
+      throw new Error(`unsupported-alg: ${jwtAlg}`);
   }
 }
 
@@ -118,8 +122,6 @@ module.exports = async function requireAuth(req, res, next) {
     next();
   } catch (err) {
     console.error('[Auth] verification failed:', err?.message ?? err);
-    return res
-      .status(401)
-      .json({ error: `Unauthorized: ${err?.message ?? 'invalid-token'}` });
+    return res.status(401).json({ error: `Unauthorized: ${err?.message ?? 'invalid-token'}` });
   }
 };
