@@ -6,27 +6,21 @@
   "scripts": {
     "start": "node index.js",
     "dev": "node --watch index.js",
-    "android": "expo run:android",
-    "ios": "expo run:ios"
+    "test": "node --test"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "@clerk/backend": "^3.4.6",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
-    "expo": "~54.0.34",
     "express": "^5.2.1",
     "express-rate-limit": "^8.5.1",
     "helmet": "^8.1.0",
-    "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.6.1",
     "pino": "^10.3.1",
     "pino-http": "^11.0.0",
-    "react": "19.1.0",
-    "react-native": "0.81.5",
     "zod": "^4.4.3"
   }
 }

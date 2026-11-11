@@ -5,8 +5,19 @@
 //
 // Cryptographically secure: spoofed userIds are rejected because the signature
 // must verify against Clerk's published public key.
+//
+// The issuer is PINNED to CLERK_ISSUER. We must never fetch keys from whatever
+// URL the token itself names — anyone can host a JWKS and sign their own tokens.
 
 const crypto = require('crypto');
+const logger = require('../logger');
+
+// Comma-separated so a dev and a production Clerk instance can both be trusted
+// during a migration. Compared exactly (trailing slash ignored).
+const normalizeIssuer = (s) => s.trim().replace(/\/+$/, '');
+const TRUSTED_ISSUERS = new Set(
+  (process.env.CLERK_ISSUER || '').split(',').map(normalizeIssuer).filter(Boolean),
+);
 
 // In-memory JWKs cache: { issuer: { keys: { kid: publicKey }, expiresAt } }
 const jwksCache = new Map();
@@ -30,8 +41,8 @@ async function fetchJwks(issuer) {
   const cached = jwksCache.get(issuer);
   if (cached && cached.expiresAt > Date.now()) return cached.keys;
 
-  const url = `${issuer.replace(/\/$/, '')}/.well-known/jwks.json`;
-  const res = await fetch(url);
+  const url = `${issuer}/.well-known/jwks.json`;
+  const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
   if (!res.ok) {
     throw new Error(`jwks-fetch-failed: ${res.status} ${url}`);
   }
@@ -60,10 +71,6 @@ function nodeAlgFor(jwtAlg) {
   switch (jwtAlg) {
     case 'RS256':
       return 'RSA-SHA256';
-    case 'RS384':
-      return 'RSA-SHA384';
-    case 'RS512':
-      return 'RSA-SHA512';
     default:
       throw new Error(`unsupported-alg: ${jwtAlg}`);
   }
@@ -76,12 +83,13 @@ async function verifyClerkJwt(token, opts = {}) {
   if (!header.kid) throw new Error('missing-kid');
   if (!payload.iss) throw new Error('missing-iss');
 
-  // Only allow Clerk-issued tokens (issuer must look like a Clerk URL)
-  if (!/clerk\./.test(payload.iss)) {
+  // Only accept tokens from our own Clerk instance — exact match, not a pattern
+  const issuer = typeof payload.iss === 'string' ? normalizeIssuer(payload.iss) : '';
+  if (!TRUSTED_ISSUERS.has(issuer)) {
     throw new Error('untrusted-issuer');
   }
 
-  const keys = await fetchJwks(payload.iss);
+  const keys = await fetchJwks(issuer);
   const publicKey = keys[header.kid];
   if (!publicKey) throw new Error(`unknown-kid: ${header.kid}`);
 
@@ -91,7 +99,8 @@ async function verifyClerkJwt(token, opts = {}) {
   if (!valid) throw new Error('invalid-signature');
 
   const now = Math.floor(Date.now() / 1000);
-  if (payload.exp && now > payload.exp + clockSkewSec) throw new Error('token-expired');
+  if (typeof payload.exp !== 'number') throw new Error('missing-exp');
+  if (now > payload.exp + clockSkewSec) throw new Error('token-expired');
   if (payload.nbf && now < payload.nbf - clockSkewSec) throw new Error('token-not-active-yet');
 
   return payload;
@@ -121,7 +130,8 @@ module.exports = async function requireAuth(req, res, next) {
     req.userId = payload.sub;
     next();
   } catch (err) {
-    console.error('[Auth] verification failed:', err?.message ?? err);
-    return res.status(401).json({ error: `Unauthorized: ${err?.message ?? 'invalid-token'}` });
+    // Log the reason server-side only; the client just needs to know it's a 401
+    logger.warn({ reason: err?.message ?? String(err) }, 'auth verification failed');
+    return res.status(401).json({ error: 'Unauthorized' });
   }
 };

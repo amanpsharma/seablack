@@ -13,8 +13,20 @@ const {
   validate,
 } = require('../schemas');
 
+const { APP_TZ, zonedMidnight, zonedToday } = require('../timezone');
+
 // Every route requires a valid Clerk session
 router.use(requireAuth);
+
+// Never send raw error text to the client — Mongo/driver messages can expose
+// schema and infrastructure details. The full error goes to the server log.
+function serverError(req, res, err) {
+  req.log.error({ err: err.message, stack: err.stack, userId: req.userId }, 'route failed');
+  if (err?.code === 11000) {
+    return res.status(409).json({ error: 'This transaction already exists.' });
+  }
+  res.status(500).json({ error: 'Something went wrong. Please try again.' });
+}
 
 // In-memory stats cache: key = `${userId}:${month||'current'}` → { data, expiresAt }.
 // 30s TTL is short enough that users see fresh data after a few seconds, but
@@ -79,7 +91,7 @@ router.get('/', validate(listQuerySchema, 'query'), async (req, res) => {
       .limit(limit);
     res.json(transactions);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -87,9 +99,8 @@ router.get('/', validate(listQuerySchema, 'query'), async (req, res) => {
 router.get('/trend', validate(trendQuerySchema, 'query'), async (req, res) => {
   try {
     const days = req.query.days;
-    const since = new Date();
-    since.setDate(since.getDate() - days + 1);
-    since.setHours(0, 0, 0, 0);
+    const today = zonedToday();
+    const since = zonedMidnight(today.year, today.month, today.day - days + 1);
 
     const result = await Transaction.aggregate([
       {
@@ -101,7 +112,7 @@ router.get('/trend', validate(trendQuerySchema, 'query'), async (req, res) => {
       },
       {
         $group: {
-          _id: { $dateToString: { format: '%Y-%m-%d', date: '$paidAt' } },
+          _id: { $dateToString: { format: '%Y-%m-%d', date: '$paidAt', timezone: APP_TZ } },
           total: { $sum: '$amount' },
           count: { $sum: 1 },
         },
@@ -110,7 +121,7 @@ router.get('/trend', validate(trendQuerySchema, 'query'), async (req, res) => {
     ]);
     res.json(result.map((r) => ({ date: r._id, total: r.total, count: r.count })));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -125,19 +136,17 @@ router.get('/stats', validate(statsQuerySchema, 'query'), async (req, res) => {
     }
     res.set('X-Cache', 'MISS');
 
-    const now = new Date();
-    let year = now.getFullYear();
-    let month = now.getMonth(); // 0-based
+    let { year, month } = zonedToday(); // month is 0-based
 
     if (req.query.month) {
       const parts = req.query.month.split('-');
-      year = parseInt(parts[0]);
-      month = parseInt(parts[1]) - 1;
+      year = parseInt(parts[0], 10);
+      month = parseInt(parts[1], 10) - 1;
     }
 
-    const startOfMonth = new Date(year, month, 1);
-    const endOfMonth = new Date(year, month + 1, 1);
-    const startOfLastMonth = new Date(year, month - 1, 1);
+    const startOfMonth = zonedMidnight(year, month, 1);
+    const endOfMonth = zonedMidnight(year, month + 1, 1);
+    const startOfLastMonth = zonedMidnight(year, month - 1, 1);
 
     const isSent = { $or: [{ type: 'sent' }, { type: { $exists: false } }] };
     const uid = { userId: req.userId };
@@ -194,8 +203,7 @@ router.get('/stats', validate(statsQuerySchema, 'query'), async (req, res) => {
     setCachedStats(req.userId, req.query.month, payload);
     res.json(payload);
   } catch (err) {
-    console.error('[GET /stats]', err.message);
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -207,7 +215,7 @@ router.post('/', validate(createTransactionSchema), async (req, res) => {
     invalidateUserStats(req.userId);
     res.status(201).json(tx);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -221,17 +229,7 @@ router.post('/bulk', validate(bulkSchema), async (req, res) => {
       return res.status(400).json({ error: 'No transactions with valid dedupeKey' });
     }
 
-    // Step 1: Claim orphaned transactions (synced before auth was added — no userId)
-    const claimOps = valid.map((tx) => ({
-      updateOne: {
-        filter: { dedupeKey: tx.dedupeKey, userId: { $exists: false } },
-        update: { $set: { userId: req.userId } },
-      },
-    }));
-    const claimResult = await Transaction.bulkWrite(claimOps, { ordered: false });
-    const claimedCount = claimResult.modifiedCount ?? 0;
-
-    // Step 2: Upsert genuinely new transactions with this user's ID
+    // Upsert by (userId, dedupeKey) so re-syncing the same SMS never duplicates
     const insertOps = valid.map((tx) => ({
       updateOne: {
         filter: { dedupeKey: tx.dedupeKey, userId: req.userId },
@@ -241,13 +239,11 @@ router.post('/bulk', validate(bulkSchema), async (req, res) => {
     }));
 
     const result = await Transaction.bulkWrite(insertOps, { ordered: false });
-    const inserted = claimedCount + (result.upsertedCount ?? 0);
+    const inserted = result.upsertedCount ?? 0;
     if (inserted > 0) invalidateUserStats(req.userId);
-    // Include claimed count so the client knows data became visible even when upsertedCount is 0
     res.status(201).json({ inserted });
   } catch (err) {
-    console.error('[POST /bulk]', err.message);
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -257,15 +253,15 @@ router.get('/count', async (req, res) => {
     const count = await Transaction.countDocuments({ userId: req.userId });
     res.json({ count });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
 // GET monthly summary for last 12 months
 router.get('/monthly', async (req, res) => {
   try {
-    const now = new Date();
-    const since = new Date(now.getFullYear(), now.getMonth() - 11, 1);
+    const today = zonedToday();
+    const since = zonedMidnight(today.year, today.month - 11, 1);
     const uid = { userId: req.userId };
 
     const [spending, receiving, topCats] = await Promise.all([
@@ -281,7 +277,7 @@ router.get('/monthly', async (req, res) => {
         },
         {
           $group: {
-            _id: { $dateToString: { format: '%Y-%m', date: '$paidAt' } },
+            _id: { $dateToString: { format: '%Y-%m', date: '$paidAt', timezone: APP_TZ } },
             spent: { $sum: '$amount' },
             count: { $sum: 1 },
           },
@@ -291,7 +287,7 @@ router.get('/monthly', async (req, res) => {
         { $match: { $and: [uid, { paidAt: { $gte: since }, type: 'received' }] } },
         {
           $group: {
-            _id: { $dateToString: { format: '%Y-%m', date: '$paidAt' } },
+            _id: { $dateToString: { format: '%Y-%m', date: '$paidAt', timezone: APP_TZ } },
             received: { $sum: '$amount' },
           },
         },
@@ -309,7 +305,7 @@ router.get('/monthly', async (req, res) => {
         {
           $group: {
             _id: {
-              month: { $dateToString: { format: '%Y-%m', date: '$paidAt' } },
+              month: { $dateToString: { format: '%Y-%m', date: '$paidAt', timezone: APP_TZ } },
               category: '$category',
             },
             total: { $sum: '$amount' },
@@ -335,8 +331,9 @@ router.get('/monthly', async (req, res) => {
 
     const result = [];
     for (let i = 11; i >= 0; i--) {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      // Plain calendar arithmetic — Date.UTC normalises month underflow for us
+      const d = new Date(Date.UTC(today.year, today.month - i, 1));
+      const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
       result.push({
         month: key,
         spent: spendMap[key]?.spent ?? 0,
@@ -347,8 +344,7 @@ router.get('/monthly', async (req, res) => {
     }
     res.json(result);
   } catch (err) {
-    console.error('[GET /monthly]', err.message);
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -359,7 +355,7 @@ router.get('/:id', validate(idParamSchema, 'params'), async (req, res) => {
     if (!tx) return res.status(404).json({ error: 'Not found' });
     res.json(tx);
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 
@@ -372,14 +368,14 @@ router.patch(
     try {
       const tx = await Transaction.findOneAndUpdate(
         { _id: req.params.id, userId: req.userId },
-        req.body,
-        { new: true },
+        { $set: req.body },
+        { new: true, runValidators: true },
       );
       if (!tx) return res.status(404).json({ error: 'Not found' });
       invalidateUserStats(req.userId);
       res.json(tx);
     } catch (err) {
-      res.status(400).json({ error: err.message });
+      serverError(req, res, err);
     }
   },
 );
@@ -391,8 +387,18 @@ router.post('/clear-sms', async (req, res) => {
     if (result.deletedCount > 0) invalidateUserStats(req.userId);
     res.json({ deleted: result.deletedCount });
   } catch (err) {
-    console.error('[POST /clear-sms]', err.message);
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
+  }
+});
+
+// DELETE every transaction this user owns — called by in-app account deletion
+router.delete('/', async (req, res) => {
+  try {
+    const result = await Transaction.deleteMany({ userId: req.userId });
+    invalidateUserStats(req.userId);
+    res.json({ deleted: result.deletedCount });
+  } catch (err) {
+    serverError(req, res, err);
   }
 });
 
@@ -404,8 +410,7 @@ router.delete('/:id', validate(idParamSchema, 'params'), async (req, res) => {
     invalidateUserStats(req.userId);
     res.json({ success: true });
   } catch (err) {
-    console.error('[DELETE /:id]', err.message);
-    res.status(500).json({ error: err.message });
+    serverError(req, res, err);
   }
 });
 

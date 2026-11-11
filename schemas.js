@@ -21,18 +21,21 @@ const transactionBase = {
 
 const createTransactionSchema = z.object(transactionBase).strict();
 
+// PATCH only touches the fields the client actually sent. These are declared
+// WITHOUT the create-time defaults above — reusing those made a PATCH of just
+// { category } also reset note/bank/upiId to '' and type to 'sent'.
 const updateTransactionSchema = z
   .object({
-    amount: transactionBase.amount.optional(),
-    recipient: transactionBase.recipient.optional(),
-    upiId: transactionBase.upiId,
-    bank: transactionBase.bank,
-    type: transactionBase.type,
-    note: transactionBase.note,
-    category: transactionBase.category,
+    amount: z.number().finite().positive().max(10_000_000).optional(),
+    recipient: z.string().trim().min(1).max(200).optional(),
+    upiId: z.string().trim().max(200).optional(),
+    bank: z.string().trim().max(50).optional(),
+    note: z.string().trim().max(2000).optional(),
+    category: z.enum(CATEGORIES).optional(),
+    type: z.enum(['sent', 'received']).optional(),
   })
   .strict()
-  .refine((v) => Object.keys(v).length > 0, {
+  .refine((v) => Object.values(v).some((x) => x !== undefined), {
     message: 'At least one field required',
   });
 

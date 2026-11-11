@@ -12,6 +12,9 @@ const envSchema = z.object({
   NODE_ENV: z.string().optional().default('development'),
   PORT: z.coerce.number().optional().default(3001),
   MONGO_URI: z.string().min(1, 'MONGO_URI is required'),
+  // e.g. https://your-app.clerk.accounts.dev — tokens from any other issuer are rejected
+  CLERK_ISSUER: z.string().min(1, 'CLERK_ISSUER is required (your Clerk Frontend API URL)'),
+  APP_TIMEZONE: z.string().optional().default('Asia/Kolkata'),
   ALLOWED_ORIGINS: z.string().optional().default(''),
   LOG_LEVEL: z.string().optional().default('info'),
 });
@@ -97,7 +100,9 @@ app.get('/health', (_, res) => res.json({ status: 'ok' }));
 // Express 5 error handler — catches body-parser errors and any next(err) calls
 app.use((err, req, res, _next) => {
   logger.error({ err: err.message, stack: err.stack }, 'unhandled express error');
-  res.status(err.status || err.statusCode || 500).json({ error: err.message });
+  const status = err.status || err.statusCode || 500;
+  // 4xx messages (bad JSON, payload too large) are safe and useful; 5xx are not
+  res.status(status).json({ error: status < 500 ? err.message : 'Something went wrong.' });
 });
 
 const PORT = envVars.PORT;
