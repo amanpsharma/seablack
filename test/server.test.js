@@ -5,7 +5,11 @@ process.env.LOG_LEVEL = 'silent';
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { updateTransactionSchema, createTransactionSchema } = require('../schemas');
+const {
+  updateTransactionSchema,
+  createTransactionSchema,
+  recategorizeSchema,
+} = require('../schemas');
 const { zonedMidnight, zonedToday } = require('../timezone');
 const requireAuth = require('../middleware/auth');
 
@@ -27,6 +31,26 @@ test('create schema still applies defaults', () => {
   });
   assert.equal(r.data.category, 'Other');
   assert.equal(r.data.type, 'sent');
+});
+
+test('categories are free text but restricted to safe characters', () => {
+  const ok = (category) => updateTransactionSchema.safeParse({ category }).success;
+  assert.equal(ok('Rent'), true);
+  assert.equal(ok('Kids & School'), true);
+  assert.equal(ok('किराया'), true);
+  assert.equal(ok(''), false);
+  assert.equal(ok('$where'), false);
+  assert.equal(ok('x'.repeat(31)), false);
+});
+
+test('recategorize needs exactly one of recipient or ids', () => {
+  const id = 'a'.repeat(24);
+  const ok = (body) => recategorizeSchema.safeParse(body).success;
+  assert.equal(ok({ category: 'Food', recipient: 'Swiggy' }), true);
+  assert.equal(ok({ category: 'Food', ids: [id] }), true);
+  assert.equal(ok({ category: 'Food' }), false);
+  assert.equal(ok({ category: 'Food', recipient: 'Swiggy', ids: [id] }), false);
+  assert.equal(ok({ category: 'Food', ids: ['not-an-id'] }), false);
 });
 
 test('month boundaries are IST midnight, not UTC', () => {

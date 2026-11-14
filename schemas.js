@@ -3,7 +3,15 @@
 
 const { z } = require('zod');
 
-const CATEGORIES = ['Food', 'Transport', 'Shopping', 'Bills', 'Entertainment', 'Health', 'Other'];
+// Categories are free text so users can create their own ("Rent", "Groceries").
+// Letters, digits, spaces and a few joiners only — the value is shown in the UI
+// and used as a grouping key.
+const categoryName = z
+  .string()
+  .trim()
+  .min(1)
+  .max(30)
+  .regex(/^[\p{L}\p{N}][\p{L}\p{M}\p{N} &\-/]*$/u, 'invalid category name');
 
 const transactionBase = {
   amount: z.number().finite().positive().max(10_000_000), // 1 crore cap — sanity bound
@@ -11,7 +19,7 @@ const transactionBase = {
   upiId: z.string().trim().max(200).optional().default(''),
   bank: z.string().trim().max(50).optional().default(''),
   note: z.string().trim().max(2000).optional().default(''),
-  category: z.enum(CATEGORIES).optional().default('Other'),
+  category: categoryName.optional().default('Other'),
   source: z.enum(['sms', 'manual']).optional().default('manual'),
   type: z.enum(['sent', 'received']).optional().default('sent'),
   transactionId: z.string().trim().max(200).optional().default(''),
@@ -31,7 +39,7 @@ const updateTransactionSchema = z
     upiId: z.string().trim().max(200).optional(),
     bank: z.string().trim().max(50).optional(),
     note: z.string().trim().max(2000).optional(),
-    category: z.enum(CATEGORIES).optional(),
+    category: categoryName.optional(),
     type: z.enum(['sent', 'received']).optional(),
   })
   .strict()
@@ -43,9 +51,24 @@ const bulkSchema = z.object({
   transactions: z.array(z.object(transactionBase).strict()).min(1).max(2000),
 });
 
+// Move many transactions to one category at once: either everything paid to a
+// given payee ("always categorise X as Y"), or an explicit list of ids.
+const recategorizeSchema = z
+  .object({
+    category: categoryName,
+    recipient: z.string().trim().min(1).max(200).optional(),
+    ids: z
+      .array(z.string().regex(/^[0-9a-fA-F]{24}$/, 'invalid id'))
+      .min(1)
+      .max(1000)
+      .optional(),
+  })
+  .strict()
+  .refine((v) => !!v.recipient !== !!v.ids, { message: 'Send either recipient or ids' });
+
 // Query string validators
 const listQuerySchema = z.object({
-  category: z.enum(CATEGORIES).optional(),
+  category: categoryName.optional(),
   source: z.enum(['sms', 'manual']).optional(),
   type: z.enum(['sent', 'received']).optional(),
   from: z.string().datetime().optional(),
@@ -89,6 +112,7 @@ module.exports = {
   createTransactionSchema,
   updateTransactionSchema,
   bulkSchema,
+  recategorizeSchema,
   listQuerySchema,
   statsQuerySchema,
   trendQuerySchema,

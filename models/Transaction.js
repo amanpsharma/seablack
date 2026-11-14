@@ -7,11 +7,8 @@ const transactionSchema = new mongoose.Schema(
     upiId: { type: String, default: '' },
     bank: { type: String, default: '' },
     note: { type: String, default: '' },
-    category: {
-      type: String,
-      enum: ['Food', 'Transport', 'Shopping', 'Bills', 'Entertainment', 'Health', 'Other'],
-      default: 'Other',
-    },
+    // Free text: built-in names plus any the user creates. Validated in schemas.js.
+    category: { type: String, default: 'Other', trim: true, maxlength: 30 },
     source: {
       type: String,
       enum: ['sms', 'manual'],

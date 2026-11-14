@@ -6,6 +6,7 @@ const {
   createTransactionSchema,
   updateTransactionSchema,
   bulkSchema,
+  recategorizeSchema,
   listQuerySchema,
   statsQuerySchema,
   trendQuerySchema,
@@ -59,6 +60,12 @@ function invalidateUserStats(userId) {
   }
 }
 
+// Money moved between the user's own accounts is not spending or income.
+// Transactions in this category are kept and listed, but left out of every total.
+const TRANSFER = 'Transfer';
+const notTransfer = { category: { $ne: TRANSFER } };
+const isSent = { $or: [{ type: 'sent' }, { type: { $exists: false } }] };
+
 // GET all transactions (with optional filters + pagination)
 router.get('/', validate(listQuerySchema, 'query'), async (req, res) => {
   try {
@@ -107,7 +114,8 @@ router.get('/trend', validate(trendQuerySchema, 'query'), async (req, res) => {
         $match: {
           userId: req.userId,
           paidAt: { $gte: since },
-          $or: [{ type: 'sent' }, { type: { $exists: false } }],
+          ...notTransfer,
+          ...isSent,
         },
       },
       {
@@ -148,19 +156,14 @@ router.get('/stats', validate(statsQuerySchema, 'query'), async (req, res) => {
     const endOfMonth = zonedMidnight(year, month + 1, 1);
     const startOfLastMonth = zonedMidnight(year, month - 1, 1);
 
-    const isSent = { $or: [{ type: 'sent' }, { type: { $exists: false } }] };
     const uid = { userId: req.userId };
 
     const [sentThisMonth, receivedThisMonth, totalLastMonth, totalAllTime, byCategory] =
       await Promise.all([
         Transaction.aggregate([
-          { $match: { $and: [uid, { paidAt: { $gte: startOfMonth, $lt: endOfMonth } }, isSent] } },
-          { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
-        ]),
-        Transaction.aggregate([
           {
             $match: {
-              $and: [uid, { paidAt: { $gte: startOfMonth, $lt: endOfMonth }, type: 'received' }],
+              $and: [uid, notTransfer, { paidAt: { $gte: startOfMonth, $lt: endOfMonth } }, isSent],
             },
           },
           { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
@@ -168,7 +171,24 @@ router.get('/stats', validate(statsQuerySchema, 'query'), async (req, res) => {
         Transaction.aggregate([
           {
             $match: {
-              $and: [uid, { paidAt: { $gte: startOfLastMonth, $lt: startOfMonth } }, isSent],
+              $and: [
+                uid,
+                notTransfer,
+                { paidAt: { $gte: startOfMonth, $lt: endOfMonth }, type: 'received' },
+              ],
+            },
+          },
+          { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
+        ]),
+        Transaction.aggregate([
+          {
+            $match: {
+              $and: [
+                uid,
+                notTransfer,
+                { paidAt: { $gte: startOfLastMonth, $lt: startOfMonth } },
+                isSent,
+              ],
             },
           },
           { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
@@ -178,7 +198,11 @@ router.get('/stats', validate(statsQuerySchema, 'query'), async (req, res) => {
           { $group: { _id: null, total: { $sum: '$amount' }, count: { $sum: 1 } } },
         ]),
         Transaction.aggregate([
-          { $match: { $and: [uid, { paidAt: { $gte: startOfMonth, $lt: endOfMonth } }, isSent] } },
+          {
+            $match: {
+              $and: [uid, notTransfer, { paidAt: { $gte: startOfMonth, $lt: endOfMonth } }, isSent],
+            },
+          },
           { $group: { _id: '$category', total: { $sum: '$amount' }, count: { $sum: 1 } } },
           { $sort: { total: -1 } },
         ]),
@@ -247,6 +271,22 @@ router.post('/bulk', validate(bulkSchema), async (req, res) => {
   }
 });
 
+// POST recategorize many transactions at once (by payee, or by explicit ids)
+router.post('/recategorize', validate(recategorizeSchema), async (req, res) => {
+  try {
+    const { category, recipient, ids } = req.body;
+    const filter = { userId: req.userId, category: { $ne: category } };
+    if (recipient) filter.recipient = recipient;
+    else filter._id = { $in: ids };
+
+    const result = await Transaction.updateMany(filter, { $set: { category } });
+    if (result.modifiedCount > 0) invalidateUserStats(req.userId);
+    res.json({ updated: result.modifiedCount });
+  } catch (err) {
+    serverError(req, res, err);
+  }
+});
+
 // GET total transaction count (current user only)
 router.get('/count', async (req, res) => {
   try {
@@ -270,6 +310,7 @@ router.get('/monthly', async (req, res) => {
           $match: {
             $and: [
               uid,
+              notTransfer,
               { paidAt: { $gte: since } },
               { $or: [{ type: 'sent' }, { type: { $exists: false } }] },
             ],
@@ -284,7 +325,7 @@ router.get('/monthly', async (req, res) => {
         },
       ]),
       Transaction.aggregate([
-        { $match: { $and: [uid, { paidAt: { $gte: since }, type: 'received' }] } },
+        { $match: { $and: [uid, notTransfer, { paidAt: { $gte: since }, type: 'received' }] } },
         {
           $group: {
             _id: { $dateToString: { format: '%Y-%m', date: '$paidAt', timezone: APP_TZ } },
@@ -297,6 +338,7 @@ router.get('/monthly', async (req, res) => {
           $match: {
             $and: [
               uid,
+              notTransfer,
               { paidAt: { $gte: since } },
               { $or: [{ type: 'sent' }, { type: { $exists: false } }] },
             ],
